@@ -155,14 +155,10 @@ def generate_presigned_url(object_key, expiration=3600):
     except Exception as e:
         return None, f"Error generating presigned URL: {e}"
 
-# --- Streamlit App ---
+# --- Page 1: Summarize and Generate Audio ---
 
-def main():
-    st.set_page_config(page_title="Website/Text Summarizer with Audio Playback", layout="wide")
-    st.title("📄 Website/Text Summarizer (500 words ~ 2 minutes)")
-    
-  
-    
+def summarize_and_generate_audio():
+    st.header("📄 Summarize and Generate Audio")
     st.markdown("---")
     
     # Input Mode Selection
@@ -277,8 +273,11 @@ def main():
                                 st.subheader("🔊 Generated Audio")
                                 st.audio(audio_url, format="audio/mp3", start_time=0)
 
-    st.markdown("---")
+# --- Page 2: Stored Audio Files ---
+
+def stored_audio_files():
     st.header("🎵 Stored Audio Files")
+    st.markdown("---")
     
     # Create a placeholder for the audio player
     audio_player_placeholder = st.empty()
@@ -305,6 +304,22 @@ def main():
                 # Update the audio player placeholder with the new audio
                 audio_player_placeholder.audio(audio_url, format="audio/mp3", start_time=0)
 
+# --- Streamlit App ---
+
+def main():
+    st.set_page_config(page_title="Website/Text Summarizer with Audio Playback", layout="wide")
+    st.title("📄 Website/Text Summarizer with Audio Playback")
+    
+    st.sidebar.title("Navigation")
+    page = st.sidebar.selectbox("Select a Page", ["Summarize and Generate Audio", "Stored Audio Files"])
+    
+    st.sidebar.markdown("---")
+    st.sidebar.info("This app summarizes website content or raw text and generates audio playback using AWS services.")
+    
+    if page == "Summarize and Generate Audio":
+        summarize_and_generate_audio()
+    elif page == "Stored Audio Files":
+        stored_audio_files()
 
 if __name__ == "__main__":
     main()
