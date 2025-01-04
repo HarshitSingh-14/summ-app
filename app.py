@@ -308,7 +308,7 @@ def stored_audio_files():
 
 def main():
     st.set_page_config(page_title="Website/Text Summarizer with Audio Playback", layout="wide")
-    st.title("📄 Website/Text Summarizer with Audio Playback")
+    # st.title("📄 Website/Text Summarizer with Audio Playback")
     
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox("Select a Page", ["Summarize and Generate Audio", "Stored Audio Files"])
