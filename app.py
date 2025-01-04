@@ -14,9 +14,6 @@ load_dotenv()
 # Retrieve AWS configurations from environment variables
 aws_region = os.getenv("AWS_REGION")
 s3_bucket_name = os.getenv("S3_BUCKET_NAME")
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-aws_session_token = os.getenv("AWS_SESSION_TOKEN")  # Optional, if using temporary credentials
 
 # Validate essential environment variables
 if not aws_region:
@@ -27,48 +24,22 @@ if not s3_bucket_name:
     st.error("S3_BUCKET_NAME environment variable is not set.")
     st.stop()
 
-if not aws_access_key_id:
-    st.error("AWS_ACCESS_KEY_ID environment variable is not set.")
-    st.stop()
-
-if not aws_secret_access_key:
-    st.error("AWS_SECRET_ACCESS_KEY environment variable is not set.")
-    st.stop()
-
 # Initialize AWS Bedrock and Polly clients
 try:
-    bedrock_client = boto3.client(
-        'bedrock-runtime',
-        region_name=aws_region,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        aws_session_token=aws_session_token  # Include if using temporary credentials
-    )
+    bedrock_client = boto3.client('bedrock-runtime', region_name=aws_region)
 except Exception as e:
     st.error(f"Error initializing Bedrock client: {e}")
     st.stop()
 
 try:
-    polly_client = boto3.client(
-        'polly',
-        region_name=aws_region,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        aws_session_token=aws_session_token
-    )
+    polly_client = boto3.client('polly', region_name=aws_region)
 except Exception as e:
     st.error(f"Error initializing Polly client: {e}")
     st.stop()
 
 # Initialize AWS S3 client
 try:
-    s3_client = boto3.client(
-        's3',
-        region_name=aws_region,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-        aws_session_token=aws_session_token
-    )
+    s3_client = boto3.client('s3', region_name=aws_region)
 except Exception as e:
     st.error(f"Error initializing S3 client: {e}")
     st.stop()
@@ -190,14 +161,7 @@ def main():
     st.set_page_config(page_title="Website/Text Summarizer with Audio Playback", layout="wide")
     st.title("📄 Website/Text Summarizer (500 words ~ 2 minutes)")
     
-    st.markdown("""
-    This application allows you to:
-    1. **Enter a website URL** to fetch and extract its text content **or** **paste raw text** directly.
-    2. **Generate a summary** of the provided text using AWS Bedrock's Claude-3 Sonnet model.
-    3. **Convert the summary to speech** using AWS Polly.
-    4. **Store the generated audio files** in an Amazon S3 bucket.
-    5. **Access and play** any stored audio files with a comprehensive audio player.
-    """)
+  
     
     st.markdown("---")
     
@@ -302,7 +266,7 @@ def main():
                         else:
                             st.success("✅ Audio successfully generated and uploaded to S3.")
                             if file_name_input:
-                                st.info(f"📁 File Name: {file_name}")
+                                st.info(f"📁 File Name: `{file_name}`")
 
                             # Generate a presigned URL for the uploaded audio
                             audio_url, error = generate_presigned_url(uploaded_file_key)
@@ -340,11 +304,7 @@ def main():
                 st.subheader("🔊 Playback")
                 # Update the audio player placeholder with the new audio
                 audio_player_placeholder.audio(audio_url, format="audio/mp3", start_time=0)
-    
-    st.markdown("""
-    ---
-    **Note:** All generated audio files are stored securely in your Amazon S3 bucket. You can access and play any of them using the player above.
-    """)
+
 
 if __name__ == "__main__":
     main()
