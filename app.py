@@ -152,7 +152,6 @@ def split_text_into_chunks(text, max_chars=3000):
     Splits the text into chunks each with a maximum of `max_chars` characters.
     Ensures that sentences are not broken in the middle.
     """
-    import textwrap
     sentences = text.split('. ')
     chunks = []
     current_chunk = ""
