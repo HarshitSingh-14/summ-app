@@ -9,7 +9,23 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from io import BytesIO
 import time
+from pytube import YouTube
+from pydub import AudioSegment
+import tempfile  # for temporary files
+import ssl
+import certifi
+from pytube import YouTube
+from pydub import AudioSegment
+import tempfile
+import os
+import ssl
+from pytube import YouTube
+import yt_dlp
+import tempfile
+import os
 
+# Create an unverified SSL context
+ssl_context = ssl._create_unverified_context()
 # Load environment variables from .env file
 load_dotenv()
 
@@ -68,6 +84,44 @@ llm = Bedrock(
 
 # --- Helper Functions --------------------------------------------------------
 
+def download_youtube_audio_to_mp3(youtube_url):
+    """
+    Downloads the audio from a YouTube video using yt-dlp, converts it to MP3 in memory,
+    and returns the MP3 data as bytes.
+    """
+    temp_mp3_path = None
+
+    try:
+        # 1) Set up yt-dlp options for audio-only download
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(tempfile.gettempdir(), '%(id)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+
+        # 2) Use yt-dlp to download the audio
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(youtube_url, download=True)
+            temp_mp3_path = ydl.prepare_filename(info_dict).replace(info_dict['ext'], 'mp3')
+
+        # 3) Read the MP3 bytes from disk
+        with open(temp_mp3_path, "rb") as f:
+            mp3_bytes = f.read()
+
+        return mp3_bytes, None
+
+    except Exception as e:
+        return None, str(e)
+
+    finally:
+        # Clean up the temporary MP3 file if it exists
+        if temp_mp3_path and os.path.exists(temp_mp3_path):
+            os.remove(temp_mp3_path)
+            
 def extract_text_from_url(url):
     """
     Extracts and returns the text content from a given URL.
@@ -464,6 +518,7 @@ def summarize_and_generate_audio():
 
 # --- Page 2: Stored Audio Files ---------------------------------------------
 
+
 def stored_audio_files():
     st.header("🎵 Stored Audio Files")
     st.markdown("---")
@@ -509,20 +564,38 @@ def stored_audio_files():
 
 # --- Page 3 (NEW): Transcribe & Summarize Uploaded Audio --------------------
 
+
 def transcribe_and_summarize_audio():
-    st.header("🎙️ Transcribe & Summarize Uploaded Audio")
+    st.header("🎙️ Transcribe & Summarize Audio (MP3 or YouTube)")
     st.markdown("---")
 
     st.info(
-        "Upload an MP3 file, then optionally save:\n"
+        "You can either upload an MP3 file **or** provide a YouTube link. "
+        "The audio will then be transcribed. Optionally, you can also save:\n"
         "1) The full transcription (.txt)\n"
         "2) A summary of that transcription (.txt)\n"
         "3) An audio version of the summary (.mp3)."
     )
 
-    with st.form(key='transcribe_form'):
-        uploaded_file = st.file_uploader("Upload your MP3 file:", type=["mp3"])
+    # NEW: Select Input Type
+    input_choice = st.radio(
+        "Choose Input Source:",
+        options=["Upload MP3 File", "YouTube Link"],
+        index=0,
+        horizontal=True
+    )
 
+    # Container to hold either file_uploader or YouTube link text input
+    uploaded_file = None
+    youtube_url = None
+
+    with st.form(key='transcribe_form'):
+        if input_choice == "Upload MP3 File":
+            uploaded_file = st.file_uploader("Upload your MP3 file:", type=["mp3"])
+        else:
+            # YouTube Link
+            youtube_url = st.text_input("Enter YouTube video URL:")
+        
         # Checkboxes for what to save
         save_transcript = st.checkbox("Save Transcription (.txt) to S3?", value=True)
         custom_transcript_name = st.text_input("Optional custom name for Transcript file (without .txt):")
@@ -546,22 +619,50 @@ def transcribe_and_summarize_audio():
         submit_transcribe = st.form_submit_button("Process Audio")
 
     if submit_transcribe:
-        if not uploaded_file:
-            st.error("❗ Please upload an MP3 file.")
-            return
-        
-        # Step 1: Upload the MP3 to S3 (to the 'view_transcriptions_and_summaries' folder)
+        # ----------------------------------------------------
+        # Validate user input 
+        # ----------------------------------------------------
+        mp3_bytes = None
+        base_file_name = None
+
+        if input_choice == "Upload MP3 File":
+            if not uploaded_file:
+                st.error("❗ Please upload an MP3 file.")
+                return
+
+            # Read MP3 bytes from uploaded file
+            mp3_bytes = uploaded_file.read()
+            # For naming, remove .mp3 extension from original name
+            base_file_name = os.path.splitext(uploaded_file.name)[0]
+
+        else:  # "YouTube Link"
+            if not youtube_url.strip():
+                st.error("❗ Please enter a valid YouTube URL.")
+                return
+            
+            # Download and convert YouTube audio to MP3 bytes
+            with st.spinner("📥 Downloading and converting YouTube audio..."):
+                mp3_bytes, download_error = download_youtube_audio_to_mp3(youtube_url)
+            
+            if download_error:
+                st.error(f"❌ Error downloading YouTube audio: {download_error}")
+                return
+            
+            # Generate a base file name from the YouTube URL
+            # For example, just use the last part or domain
+            base_file_name = "youtube_audio"
+
+        # ----------------------------------------------------
+        # Step 1: Upload the MP3 to S3 (for Transcribe)
+        # ----------------------------------------------------
         unique_id = str(uuid4())
-        base_file_name = os.path.splitext(uploaded_file.name)[0]
-        # We'll generate a unique key just to avoid collisions, but you could rely solely on custom names if you wish.
         s3_key_mp3 = f"view_transcriptions_and_summaries/{base_file_name}_{unique_id}.mp3"
 
         try:
-            file_bytes = uploaded_file.read()
             s3_client.put_object(
                 Bucket=s3_bucket_name,
                 Key=s3_key_mp3,
-                Body=file_bytes,
+                Body=mp3_bytes,
                 ContentType='audio/mpeg'
             )
             st.success(f"✅ MP3 uploaded to S3 as: {s3_key_mp3}")
@@ -569,7 +670,9 @@ def transcribe_and_summarize_audio():
             st.error(f"Error uploading MP3 to S3: {e}")
             return
 
-        # Step 2: Transcribe the MP3 (sync)
+        # ----------------------------------------------------
+        # Step 2: Transcribe the MP3
+        # ----------------------------------------------------
         with st.spinner("📜 Transcribing audio..."):
             transcribed_text, error = transcribe_audio_from_s3(s3_key_mp3)
         
@@ -580,7 +683,9 @@ def transcribe_and_summarize_audio():
         st.subheader("Transcribed Text")
         st.write(transcribed_text)
 
+        # ----------------------------------------------------
         # Step 3: (Optional) Save transcript to S3
+        # ----------------------------------------------------
         if save_transcript:
             if custom_transcript_name.strip():
                 # Sanitize custom name
@@ -601,7 +706,9 @@ def transcribe_and_summarize_audio():
             else:
                 st.info(f"📝 Transcript saved as `{transcript_file_name}` in 'view_transcriptions_and_summaries'.")
 
+        # ----------------------------------------------------
         # Step 4: (Optional) Summarize the transcription
+        # ----------------------------------------------------
         summary_text = None
         if save_summary or generate_summary_audio:
             with st.spinner("📝 Summarizing transcription with Claude..."):
@@ -634,7 +741,9 @@ def transcribe_and_summarize_audio():
                 else:
                     st.info(f"📝 Summary saved as `{summary_file_name}` in 'view_transcriptions_and_summaries'.")
 
+        # ----------------------------------------------------
         # Step 5: (Optional) Convert summary to MP3
+        # ----------------------------------------------------
         if generate_summary_audio and summary_text:
             if custom_summary_audio_name.strip():
                 # Sanitize custom name
