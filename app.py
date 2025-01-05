@@ -82,7 +82,7 @@ def summarize_text_bedrock(text, max_words=50):
     """
     # Prepare the prompt with the required structure
     prompt = (
-        f"Human: Summarize the following text in {max_words} words:\n\n{text}\n\nAssistant:"
+        f"Human: Summarize the following text in {max_words} words with the first line as the topic of the summary:\n\n{text}\n\nAssistant: "
     )
     
     try:
@@ -126,10 +126,16 @@ def text_to_speech_polly(text, voice_id="Joanna"):
     
     for idx, chunk in enumerate(chunks):
         try:
+            # response = polly_client.synthesize_speech(
+            #     Text=chunk,
+            #     OutputFormat='mp3',
+            #     VoiceId=voice_id
+            # )
             response = polly_client.synthesize_speech(
                 Text=chunk,
                 OutputFormat='mp3',
-                VoiceId=voice_id
+                VoiceId= voice_id,
+                Engine='neural'  
             )
             
             if "AudioStream" in response:
