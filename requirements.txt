@@ -11,4 +11,3 @@ langchain-openai==0.0.6
 certifi
 pytube
 yt_dlp
-tempfile
