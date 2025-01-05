@@ -9,17 +9,10 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from io import BytesIO
 import time
-from pytube import YouTube
-from pydub import AudioSegment
-import tempfile  # for temporary files
 import ssl
 import certifi
-from pytube import YouTube
-from pydub import AudioSegment
-import tempfile
 import os
 import ssl
-from pytube import YouTube
 import yt_dlp
 import tempfile
 import os
