@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from urllib.parse import urlparse
 from uuid import uuid4
+from io import BytesIO
 
 # Load environment variables from .env file
 load_dotenv()
@@ -92,24 +93,53 @@ def summarize_text_bedrock(text, max_words=50):
     except Exception as e:
         return None, f"Error generating summary: {e}"
 
+def split_text_into_chunks(text, max_chars=3000):
+    """
+    Splits the text into chunks each with a maximum of `max_chars` characters.
+    Ensures that sentences are not broken in the middle.
+    """
+    import textwrap
+    sentences = text.split('. ')
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) + 1 <= max_chars:
+            current_chunk += sentence + '. '
+        else:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence + '. '
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
 def text_to_speech_polly(text, voice_id="Joanna"):
     """
     Converts the given text to speech using AWS Polly and returns the audio bytes.
+    Handles text longer than Polly's limit by splitting into chunks.
     """
-    try:
-        response = polly_client.synthesize_speech(
-            Text=text,
-            OutputFormat='mp3',
-            VoiceId=voice_id
-        )
-        
-        if "AudioStream" in response:
-            audio_stream = response["AudioStream"].read()
-            return audio_stream, None
-        else:
-            return None, "No audio stream returned from Polly."
-    except Exception as e:
-        return None, f"Error generating speech: {e}"
+    max_polly_chars = 3000  # AWS Polly's limit per request
+    chunks = split_text_into_chunks(text, max_chars=max_polly_chars)
+    audio_stream = BytesIO()
+    
+    for idx, chunk in enumerate(chunks):
+        try:
+            response = polly_client.synthesize_speech(
+                Text=chunk,
+                OutputFormat='mp3',
+                VoiceId=voice_id
+            )
+            
+            if "AudioStream" in response:
+                audio_stream.write(response["AudioStream"].read())
+            else:
+                return None, "No audio stream returned from Polly."
+        except Exception as e:
+            return None, f"Error generating speech for chunk {idx + 1}: {e}"
+    
+    return audio_stream.getvalue(), None
 
 def upload_audio_to_s3(audio_bytes, file_name):
     """
@@ -133,11 +163,13 @@ def list_audio_files():
     Returns a list of object keys.
     """
     try:
-        response = s3_client.list_objects_v2(Bucket=s3_bucket_name)
-        if 'Contents' in response:
-            return [obj['Key'] for obj in response['Contents'] if obj['Key'].lower().endswith('.mp3')], None
-        else:
-            return [], None
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=s3_bucket_name)
+        audio_files = []
+        for page in pages:
+            if 'Contents' in page:
+                audio_files.extend([obj['Key'] for obj in page['Contents'] if obj['Key'].lower().endswith('.mp3')])
+        return audio_files, None
     except Exception as e:
         return None, f"Error listing S3 bucket contents: {e}"
 
@@ -155,22 +187,40 @@ def generate_presigned_url(object_key, expiration=3600):
     except Exception as e:
         return None, f"Error generating presigned URL: {e}"
 
-# --- Page 1: Summarize and Generate Audio ---
+def delete_audio_from_s3(object_key):
+    """
+    Deletes the specified audio file from the S3 bucket.
+    """
+    try:
+        s3_client.delete_object(Bucket=s3_bucket_name, Key=object_key)
+        return True, None
+    except Exception as e:
+        return False, f"Error deleting audio file: {e}"
+
+# --- Page 1: Summarize and Generate Audio / Generate Audio Without Summarizing ---
 
 def summarize_and_generate_audio():
     st.header("📄 Summarize and Generate Audio")
     st.markdown("---")
     
+    # Option Selection
+    operation_mode = st.radio(
+        "📝 Choose Operation:",
+        options=["Summarize and Generate Audio", "Generate Audio Without Summarizing"],
+        index=0,
+        horizontal=True
+    )
+    
     # Input Mode Selection
     input_mode = st.radio(
-        "📝 Choose Input Method:",
+        "🔗 Choose Input Method:",
         options=["Provide a URL", "Paste Raw Text"],
         index=0,
         horizontal=True
     )
     
-    # URL input, word limit, and custom file name
-    with st.form(key='summarize_form'):
+    # Form for inputs
+    with st.form(key='audio_form'):
         if input_mode == "Provide a URL":
             url_input = st.text_input("🔗 Enter the URL:", placeholder="https://example.com")
             raw_text = None  # Ensure raw_text is None when URL is used
@@ -178,16 +228,28 @@ def summarize_and_generate_audio():
             raw_text = st.text_area("📝 Paste your raw text here:", height=200, placeholder="Enter your text here...")
             url_input = None  # Ensure url_input is None when raw text is used
         
-        max_words = st.number_input("✂️ Max words for summary:", min_value=10, max_value=10000, value=50, step=10)
-        file_name_input = st.text_input("🎼 Optional: Enter a custom name for the audio file (without .mp3):", placeholder="my_summary_audio")
-        submit_button = st.form_submit_button(label='Summarize and Generate Audio')
-    
+        if operation_mode == "Summarize and Generate Audio":
+            max_words = st.number_input(
+                "✂️ Max words for summary:",
+                min_value=10,
+                max_value=1000,  # Reduced max to prevent exceeding Polly's limits
+                value=100,  # Adjusted default
+                step=10,
+                help="Ensure that the summary does not exceed AWS Polly's maximum character limit."
+            )
+        
+        file_name_input = st.text_input(
+            "🎼 Optional: Enter a custom name for the audio file (without .mp3):",
+            placeholder="my_summary_audio"
+        )
+        submit_button = st.form_submit_button(label='Process')
+
     if submit_button:
         # Input Validation
         if input_mode == "Provide a URL" and not url_input:
             st.error("❗ Please enter a valid URL.")
         elif input_mode == "Paste Raw Text" and not raw_text.strip():
-            st.error("❗ Please paste some text to summarize.")
+            st.error("❗ Please paste some text to process.")
         else:
             # Extract or Use Raw Text
             if input_mode == "Provide a URL":
@@ -204,23 +266,36 @@ def summarize_and_generate_audio():
             if error:
                 st.error(f"❌ {error}")
             elif not page_text:
-                st.error("❌ No text found to summarize.")
+                st.error("❌ No text found to process.")
             else:
-                # Summarize Text
-                with st.spinner("📝 Summarizing with Claude-3 Sonnet..."):
-                    summary, error = summarize_text_bedrock(page_text, max_words)
+                # Depending on operation mode, summarize or use raw text
+                if operation_mode == "Summarize and Generate Audio":
+                    with st.spinner("📝 Summarizing with Claude-3 Sonnet..."):
+                        summary, error = summarize_text_bedrock(page_text, max_words)
 
-                if error:
-                    st.error(f"❌ {error}")
-                elif not summary:
-                    st.error("❌ No summary returned from Bedrock.")
+                    if error:
+                        st.error(f"❌ {error}")
+                        summary = None
+                    elif not summary:
+                        st.error("❌ No summary returned from Bedrock.")
+                    else:
+                        st.subheader("📑 Summary")
+                        st.write(summary)
+                        text_to_convert = summary
                 else:
-                    st.subheader("📑 Summary")
-                    st.write(summary)
+                    text_to_convert = page_text  # Use full text without summarizing
 
+                if text_to_convert:
+                    # Check the length of the text
+                    if len(text_to_convert) > 3000:
+                        st.warning(
+                            "⚠️ The text is longer than AWS Polly's maximum limit of 3000 characters. "
+                            "It will be split into smaller chunks for processing."
+                        )
+                    
                     # Generate Audio
                     with st.spinner("🎤 Generating audio with AWS Polly..."):
-                        audio_bytes, error = text_to_speech_polly(summary)
+                        audio_bytes, error = text_to_speech_polly(text_to_convert)
 
                     if error:
                         st.error(f"❌ {error}")
@@ -249,10 +324,16 @@ def summarize_and_generate_audio():
                                 parsed_url = urlparse(url_input)
                                 domain = parsed_url.netloc.replace('.', '_')
                                 unique_id = str(uuid4())
-                                file_name = f"{domain}_{unique_id}.mp3"
+                                if operation_mode == "Summarize and Generate Audio":
+                                    file_name = f"{domain}_summary_{unique_id}.mp3"
+                                else:
+                                    file_name = f"{domain}_{unique_id}.mp3"
                             else:
                                 unique_id = str(uuid4())
-                                file_name = f"rawtext_{unique_id}.mp3"
+                                if operation_mode == "Summarize and Generate Audio":
+                                    file_name = f"rawtext_summary_{unique_id}.mp3"
+                                else:
+                                    file_name = f"rawtext_{unique_id}.mp3"
 
                         with st.spinner("💾 Uploading audio to Amazon S3..."):
                             uploaded_file_key, error = upload_audio_to_s3(audio_bytes, file_name)
@@ -292,23 +373,36 @@ def stored_audio_files():
     else:
         # Create a selection dropdown for audio files
         selected_audio = st.selectbox("🔎 Select an audio file to play:", options=audio_files)
-    
-        if selected_audio:
-            with st.spinner("⏳ Generating presigned URL..."):
-                audio_url, error = generate_presigned_url(selected_audio)
-    
-            if error:
-                st.error(f"❌ {error}")
-            else:
-                st.subheader("🔊 Playback")
-                # Update the audio player placeholder with the new audio
-                audio_player_placeholder.audio(audio_url, format="audio/mp3", start_time=0)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if selected_audio:
+                with st.spinner("⏳ Generating presigned URL..."):
+                    audio_url, error = generate_presigned_url(selected_audio)
+        
+                if error:
+                    st.error(f"❌ {error}")
+                else:
+                    st.subheader("🔊 Playback")
+                    # Update the audio player placeholder with the new audio
+                    audio_player_placeholder.audio(audio_url, format="audio/mp3", start_time=0)
+        
+        with col2:
+            if selected_audio:
+                delete_confirm = st.button("🗑️ Delete Selected Audio")
+                if delete_confirm:
+                    with st.spinner("🗑️ Deleting audio file from S3..."):
+                        success, delete_error = delete_audio_from_s3(selected_audio)
+                    if success:
+                        st.success(f"✅ `{selected_audio}` has been deleted successfully.")
+                        # st.experimental_rerun()  # Refresh the page to update the list
+                    else:
+                        st.error(f"❌ {delete_error}")
 
 # --- Streamlit App ---
 
 def main():
     st.set_page_config(page_title="Website/Text Summarizer with Audio Playback", layout="wide")
-    # st.title("📄 Website/Text Summarizer with Audio Playback")
     
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox("Select a Page", ["Summarize and Generate Audio", "Stored Audio Files"])
